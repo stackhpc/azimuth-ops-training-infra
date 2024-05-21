@@ -1,0 +1,7 @@
+---
+
+- hosts: azops_training_deploy
+  roles:
+    - role: infra
+      vars:
+        terraform_state: absent

@@ -1,0 +1,8 @@
+.ansible
+.bin
+.python-version
+.secrets
+.seed-ssh
+.terraform
+clouds.yaml
+*-vars.yml

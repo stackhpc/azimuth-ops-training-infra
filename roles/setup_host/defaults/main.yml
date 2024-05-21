@@ -1,0 +1,11 @@
+---
+
+# The name of the group to put training users in
+azops_training_group_name: azops_training
+
+# The salt to use with the password hashing
+# This avoids the user task reporting as changed when the input is the same
+azops_training_password_salt: azopstraining
+
+# A list of training users that should be created
+azops_training_users: []

@@ -1,0 +1,74 @@
+# The name of the provisioned node
+infra_name: azops-control
+
+#####
+# Configuration for the internal network onto which Azimuth AIOs will be provisioned
+#
+# This can use either a pre-existing network, which should already be connected to an
+# external network using a router, or a network and router can be provisioned
+#####
+# The name or ID of an existing network onto which nodes should be provisioned
+# This network should be connected to an external network via a router
+infra_network_name:
+infra_network_id: >-
+  {{-
+    lookup('pipe', 'openstack network show {{ infra_network_name }} -f value -c id')
+    if infra_network_name
+    else None
+  }}
+# OR
+# The CIDR of the subnet that should be created
+infra_network_cidr: 192.168.100.0/24
+# The name of the external network to use
+infra_external_network_name: >-
+  {{-
+    lookup('pipe', 'openstack network list --external -f json') |
+      from_json |
+      map(attribute = 'Name') |
+      first
+  }}
+# The ID of the external network to use
+infra_external_network_id: >-
+  {{ lookup('pipe', 'openstack network show {{ infra_external_network_name }} -f value -c id') }}
+
+#####
+# Configuration for the accessible endpoint for the control node
+#
+# This can use one of:
+#   * A fixed floating IP
+#   * A floating IP from a pool
+#
+# If neither are given, the name of the external network is used as the floating IP pool
+#####
+# The fixed floating IP to associate with the machine
+infra_fixed_floatingip:
+# OR
+# The name of the floating IP pool
+infra_floatingip_pool:
+
+#####
+# Configuration of the control node
+#####
+# The name of a pre-existing image to use
+infra_image_name: "{{ undef(hint = 'infra_image_name or infra_image_id is required') }}"
+# The ID of a pre-existing image to use
+infra_image_id: >-
+  {{ lookup('pipe', 'openstack image show {{ infra_image_name }} -f value -c id') }}
+
+# The name of the flavor to use
+infra_flavor_name: "{{ undef(hint = 'infra_flavor_name or infra_flavor_id is required') }}"
+# The ID of the flavor to use
+infra_flavor_id: >-
+  {{ lookup('pipe', 'openstack flavor show {{ infra_flavor_name }} -f value -c id') }}
+
+# Indicates whether to use a root volume for the control node
+# This may be necessary in cases where the root volume is not large enough
+infra_root_volume_enabled: no
+infra_root_volume_size: 40
+infra_root_volume_type:
+
+# The Ansible groups to place the provisioned node into
+infra_ansible_groups: [azops_training_controller]
+
+# We support Ubuntu images only, and the default cloud user is 'ubuntu'
+cluster_ssh_user: ubuntu

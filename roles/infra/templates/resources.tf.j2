@@ -1,0 +1,121 @@
+resource "openstack_networking_secgroup_v2" "secgroup" {
+  name                 = "{{ infra_name }}"
+  delete_default_rules = true   # Fully manage with terraform
+}
+
+resource "openstack_networking_secgroup_rule_v2" "secgroup_rule_egress" {
+  direction         = "egress"
+  ethertype         = "IPv4"
+  security_group_id = openstack_networking_secgroup_v2.secgroup.id
+}
+
+resource "openstack_networking_secgroup_rule_v2" "secgroup_rule_ingress_ssh" {
+  direction         = "ingress"
+  ethertype         = "IPv4"
+  protocol          = "tcp"
+  port_range_min    = 22
+  port_range_max    = 22
+  security_group_id = openstack_networking_secgroup_v2.secgroup.id
+}
+
+{% if not infra_network_id %}
+resource "openstack_networking_network_v2" "internal_net" {
+  name           = "{{ infra_name }}"
+  admin_state_up = "true"
+}
+
+resource "openstack_networking_subnet_v2" "internal_subnet" {
+  name       = "{{ infra_name }}"
+  network_id = openstack_networking_network_v2.internal_net.id
+  cidr       = "{{ infra_network_cidr }}"
+  ip_version = 4
+}
+
+resource "openstack_networking_router_v2" "router" {
+  name                = "{{ infra_name }}"
+  admin_state_up      = "true"
+  external_network_id = "{{ infra_external_network_id }}"
+}
+
+resource "openstack_networking_router_interface_v2" "router_interface" {
+  router_id = openstack_networking_router_v2.router.id
+  subnet_id = openstack_networking_subnet_v2.internal_subnet.id
+}
+{% endif %}
+
+resource "openstack_networking_port_v2" "port_internal" {
+  name = "{{ infra_name }}"
+
+  admin_state_up = "true"
+{% if infra_network_id %}
+  network_id = "{{ infra_network_id }}"
+{% else %}
+  network_id = openstack_networking_network_v2.internal_net.id
+
+  fixed_ip {
+    subnet_id = openstack_networking_subnet_v2.internal_subnet.id
+  }
+{% endif %}
+
+  security_group_ids = [
+    openstack_networking_secgroup_v2.secgroup.id
+  ]
+}
+
+resource "openstack_compute_keypair_v2" "keypair_deploy" {
+  name = "{{ infra_name }}-deploy"
+}
+
+resource "openstack_compute_instance_v2" "node" {
+  name      = "{{ infra_name }}"
+
+{% if infra_root_volume_enabled %}
+  block_device {
+    uuid                  = "{{ infra_image_id }}"
+    source_type           = "image"
+    volume_size           = {{ infra_root_volume_size }}
+{% if infra_root_volume_type %}
+    volume_type           = "{{ infra_root_volume_type }}"
+{% endif %}
+    boot_index            = 0
+    destination_type      = "volume"
+    delete_on_termination = true
+  }
+{% else %}
+  image_id  = "{{ infra_image_id }}"
+{% endif %}
+
+  flavor_id = "{{ infra_flavor_id }}"
+  key_pair  = openstack_compute_keypair_v2.keypair_deploy.name
+
+  network {
+    port = openstack_networking_port_v2.port_internal.id
+  }
+}
+
+{% if not infra_fixed_floatingip %}
+{% if not infra_floatingip_pool %}
+data "openstack_networking_network_v2" "external_net" {
+  network_id = "{{ infra_external_network_id }}"
+}
+{% endif %}
+
+resource "openstack_networking_floatingip_v2" "fip" {
+  description = "{{ infra_name }} SSH"
+
+{% if infra_floatingip_pool %}
+  pool = "{{ infra_floatingip_pool }}"
+{% else %}
+  pool = data.openstack_networking_network_v2.external_net.name
+{% endif %}
+}
+{% endif %}
+
+resource "openstack_compute_floatingip_associate_v2" "fip_associate" {
+{% if infra_fixed_floatingip %}
+  floating_ip = "{{ infra_fixed_floatingip }}"
+{% else %}
+  floating_ip = openstack_networking_floatingip_v2.fip.address
+{% endif %}
+  instance_id = openstack_compute_instance_v2.node.id
+}

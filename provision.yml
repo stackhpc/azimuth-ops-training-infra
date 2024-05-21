@@ -1,0 +1,21 @@
+---
+
+# Provision the control host
+- hosts: azops_training_deploy
+  roles:
+    - infra
+
+# Do one-time host setup that requires a privileged account
+- hosts: azops_training_controller
+  become: yes
+  roles:
+    # Install dependencies and create user accounts
+    - setup_host
+    # Adopt the host once per user with different authentication parameters
+    - inventory_adopt
+
+# Connect to the host as each user and configure their Azimuth environment
+# Using multiple hosts means that this can happen concurrently for each user
+- hosts: azops_training_user_hosts
+  roles:
+    - setup_azimuth

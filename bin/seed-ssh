@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+
+#####
+## This script SSHs to the Terraform-provisioned control node by querying the Terraform state for
+## connection details
+#####
+
+set -eo pipefail
+
+
+ansible_variable() {
+    ANSIBLE_LOAD_CALLBACK_PLUGINS=true \
+    ANSIBLE_STDOUT_CALLBACK=json \
+    ansible -m debug -a "var=$1" all | \
+      jq -r ".plays[0].tasks[0].hosts.localhost.$1"
+}
+
+
+# Add the Terraform binary directory to the PATH, so we can use it if it was
+# downloaded as part of a provision
+# If not, we need Terraform to be available
+terraform_binary_directory="$(ansible_variable terraform_binary_directory)"
+export PATH="$terraform_binary_directory:$PATH"
+
+# If tofu is available in the path, use that
+if which tofu >/dev/null; then
+  terraform_binary_path="$(which tofu)"
+elif which terraform >/dev/null; then
+  echo "OpenTofu is not installed - falling back to Terraform" >&2
+  echo "This may cause issues, especially when downloading providers" >&2
+  terraform_binary_path="$(which terraform)"
+else
+  echo "Unable to find OpenTofu or Terraform" >&2
+  exit 1
+fi
+
+# Make a working directory for seed-ssh related stuff
+work_dir="$(ansible_variable inventory_dir)/.seed-ssh"
+mkdir -p "$work_dir"
+
+# Initialise the OpenTofu backend
+terraform_backend_type="$(ansible_variable terraform_backend_type)"
+if [ "$terraform_backend_type" = "local" ]; then
+    # If the OpenTofu backend is local, that means the provisioning is run on the current host
+    # Hence there should be a pre-existing Terraform project directory we can point at
+    terraform_dir="$(ansible_variable terraform_project_path)"
+else
+    # If the OpenTofu backend type is something other than local, make an OpenTofu project
+    # directory containing a backend configuration that specifies the type and config
+    terraform_dir="$work_dir"
+    cat <<EOF > "$terraform_dir/backend.tf"
+terraform {
+  backend "${terraform_backend_type}" {}
+}
+EOF
+    ansible_variable terraform_backend_config > "$terraform_dir/backend_config.json"
+    $terraform_binary_path \
+      -chdir="$terraform_dir" \
+      init \
+      -input=false \
+      -reconfigure \
+      -backend-config=$terraform_dir/backend_config.json
+fi
+
+# Read the required variables from the Terraform state
+tfstate_file="$work_dir/tfstate"
+$terraform_binary_path -chdir="$terraform_dir" state pull > "$tfstate_file"
+node_ip="$(jq -r '.outputs.cluster_gateway_ip.value // ""' "$tfstate_file")"
+deploy_key="$work_dir/deploy-key"
+jq -r '.outputs.cluster_ssh_private_key.value // ""' "$tfstate_file" > "$deploy_key"
+chmod 600 "$deploy_key"
+
+if [ -z "$node_ip" ]; then
+    echo ""
+    echo "[ERROR] Unable to find node details in Terraform state" >&2
+    exit 1
+fi
+
+# Run the SSH command
+exec \
+  ssh \
+    -o UserKnownHostsFile=/dev/null \
+    -o StrictHostKeyChecking=no \
+    -o IdentitiesOnly=yes \
+    -A \
+    -i $deploy_key \
+    ubuntu@$node_ip \
+    "$@"

@@ -1,0 +1,25 @@
+---
+
+- name: Add host to inventory for each user
+  add_host:
+    name: "{{ user.username | replace('_', '-') }}"
+    groups:
+      - azops_training_user_hosts
+    ansible_host: "{{ infra_external_ip }}"
+    # Use paramiko as it handles SSH passwords nicely
+    ansible_connection: paramiko_ssh
+    ansible_user: "{{ user.username }}"
+    ansible_password: "{{ user.password }}"
+    ansible_ssh_common_args: "-o UserKnownHostsFile=/dev/null"
+    # Use the same inventory_dir as the host that ran Terraform
+    inventory_dir: "{{ inventory_dir }}"
+    # Set the network IDs on the new hosts as well
+    infra_external_network_id: "{{ infra_external_network_id }}"
+    infra_network_id: "{{ infra_network_id }}"
+    # Also include the index of the user
+    user_idx: "{{ user_idx }}"
+  loop: "{{ azops_training_users }}"
+  loop_control:
+    loop_var: user
+    index_var: user_idx
+    label: "{{ user.username }}"

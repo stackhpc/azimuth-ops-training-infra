@@ -1,0 +1,184 @@
+---
+
+- name: Clone Azimuth config repository
+  command: >-
+    git clone {{ azops_training_azimuth_config_repo }} {{ ansible_env.HOME }}/azimuth-config
+  register: setup_azimuth_config_clone
+  changed_when: setup_azimuth_config_clone.rc == 0
+  failed_when: >-
+    setup_azimuth_config_clone.rc == 1 and
+    "already exists" not in setup_azimuth_config_clone.stderr
+
+- block:
+    - name: Add upstream remote to config repo
+      command: git remote add upstream {{ azops_training_azimuth_config_repo }}
+      register: setup_azimuth_config_add_upstream
+      changed_when: setup_azimuth_config_add_upstream.rc == 0
+      failed_when: >-
+        setup_azimuth_config_add_upstream.rc == 1 and
+        "remote upstream already exists" not in setup_azimuth_config_add_upstream.stderr
+
+    - name: Create main branch from starting tag
+      command: git branch main {{ azops_training_starting_tag }}
+      register: setup_azimuth_config_create_main
+      changed_when: setup_azimuth_config_create_main.rc == 0
+      failed_when: >-
+        setup_azimuth_config_create_main.rc == 1 and
+        "already exists" not in setup_azimuth_config_create_main.stderr
+
+    - name: Checkout main branch
+      command: git checkout main
+      register: setup_azimuth_config_checkout_main
+      changed_when: >-
+        "Switched to branch" in setup_azimuth_config_checkout_main.stderr
+
+    - name: Set up Python virtual environment
+      command: bash ./bin/ensure-venv
+  module_defaults:
+    command:
+      chdir: "{{ ansible_env.HOME }}/azimuth-config"
+
+- name: Create directories for training environment
+  file:
+    path: "{{ ansible_env.HOME }}/azimuth-config/environments/training/inventory/group_vars/all"
+    state: directory
+
+# If an application credential exists, we rotate it
+- name: Delete existing application credential
+  command: >-
+    .venv/bin/openstack application credential delete azimuth-deploy
+      --os-auth-url {{ azops_training_auth_url }}
+      --os-username {{ ansible_user }}
+      --os-password {{ ansible_password | quote }}
+      --os-user-domain-name {{ azops_training_user_domain_name }}
+      --os-project-id {{ azops_training_project_id }}
+  args:
+    chdir: "{{ ansible_env.HOME }}/azimuth-config"
+  register: setup_azimuth_config_delete_appcred
+  changed_when: setup_azimuth_config_delete_appcred.rc == 0
+  failed_when: >-
+    setup_azimuth_config_delete_appcred.rc != 0 and
+    "No applicationcredential with a name or ID" not in setup_azimuth_config_delete_appcred.stderr
+
+- name: Generate application credential
+  command: >-
+    .venv/bin/openstack application credential create azimuth-deploy
+      --format json
+      --os-auth-url {{ azops_training_auth_url }}
+      --os-username {{ ansible_user }}
+      --os-password {{ ansible_password | quote }}
+      --os-user-domain-name {{ azops_training_user_domain_name }}
+      --os-project-id {{ azops_training_project_id }}
+  args:
+    chdir: "{{ ansible_env.HOME }}/azimuth-config"
+  register: setup_azimuth_config_generate_appcred
+  changed_when: setup_azimuth_config_generate_appcred.rc == 0
+  failed_when: >-
+    setup_azimuth_config_generate_appcred.rc != 0 and
+    "Duplicate entry found" not in setup_azimuth_config_generate_appcred.stderr
+
+- name: Write application credential to environment
+  copy:
+    dest: "{{ ansible_env.HOME }}/azimuth-config/environments/training/clouds.yaml"
+    content: |
+      clouds:
+        openstack:
+          auth:
+            auth_url: {{ azops_training_auth_url }}
+            application_credential_id: "{{ setup_azimuth_config_generate_appcred.stdout | from_json | json_query('id') }}"
+            application_credential_secret: "{{ setup_azimuth_config_generate_appcred.stdout | from_json | json_query('secret') }}"
+          region_name: "RegionOne"
+          interface: "public"
+          identity_api_version: 3
+          auth_type: "v3applicationcredential"
+  when: setup_azimuth_config_generate_appcred is changed
+
+- name: Get existing floating IP
+  command: .venv/bin/openstack floating ip list --tags {{ ansible_user }} --format json
+  environment:
+    OS_CLOUD: openstack
+    OS_CLIENT_CONFIG_FILE: ./environments/training/clouds.yaml
+  args:
+    chdir: "{{ ansible_env.HOME }}/azimuth-config"
+  changed_when: false
+  register: setup_azimuth_config_existing_fip
+
+- name: Set floating IP fact from existing FIP
+  set_fact:
+    azops_training_infra_fixed_floatingip: >-
+      {{
+        setup_azimuth_config_existing_fip.stdout |
+          from_json |
+          first |
+          json_query('"Floating IP Address"')
+      }}
+  when: "setup_azimuth_config_existing_fip.stdout | from_json | length > 0"
+
+- block:
+    - name: Allocate floating IP
+      command: >-
+        .venv/bin/openstack floating ip create
+          --description 'ingress IP for {{ ansible_user }}'
+          --tag {{ ansible_user }}
+          --format json
+          {{ azops_training_infra_external_network_id }}
+      environment:
+        OS_CLOUD: openstack
+        OS_CLIENT_CONFIG_FILE: ./environments/training/clouds.yaml
+      args:
+        chdir: "{{ ansible_env.HOME }}/azimuth-config"
+      register: setup_azimuth_config_create_fip
+    
+    - name: Set floating IP fact from allocated IP
+      set_fact:
+        azops_training_infra_fixed_floatingip: >-
+          {{
+            setup_azimuth_config_create_fip.stdout |
+              from_json |
+              json_query('floating_ip_address')
+          }}
+  when: azops_training_infra_fixed_floatingip is not defined
+
+- name: Template training environment
+  template:
+    src: "{{ item }}"
+    dest: "{{ ansible_env.HOME }}/azimuth-config/environments/training/{{ item }}"
+  loop:  
+    - ansible.cfg
+    - inventory/hosts
+    - inventory/group_vars/all/variables.yml
+    - inventory/group_vars/all/secrets.yml
+
+- block:
+    - name: Configure git user
+      command: git config {{ item.name }} {{ item.value | quote }}
+      loop:
+        - name: user.name
+          value: "{{ ansible_user }}"
+        - name: user.email
+          value: "{{ ansible_user }}@training.azimuth"
+
+    - name: Add training environment to main
+      command: git add environments/training
+
+    - name: Commit changes to main
+      command: git commit -m "Add training environment"
+      register: setup_azimuth_config_commit_env
+      changed_when: setup_azimuth_config_commit_env.rc == 0
+      failed_when: >-
+        setup_azimuth_config_commit_env.rc == 1 and
+        "nothing to commit" not in setup_azimuth_config_commit_env.stdout
+  module_defaults:
+    command:
+      chdir: "{{ ansible_env.HOME }}/azimuth-config"
+
+- name: Provision Azimuth
+  shell: |
+    set -e
+    source ./bin/activate training
+    ansible-galaxy install -f -r requirements.yml
+    ansible-playbook stackhpc.azimuth_ops.provision
+  args:
+    executable: /usr/bin/bash
+    chdir: "{{ ansible_env.HOME }}/azimuth-config"
+  when: azops_training_infra_provision_azimuth

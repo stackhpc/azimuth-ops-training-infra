@@ -1,0 +1,51 @@
+---
+
+# The config repository to clone for each user
+azops_training_azimuth_config_repo: https://github.com/stackhpc/azimuth-config.git
+
+# The starting tag for the training repository
+# This is usually one version back from latest so that training participants can do an upgrade
+azops_training_starting_tag: 0.6.1
+
+# The auth URL for the target OpenStack
+# By default, use the auth URL from the target OpenStack for the deployment
+azops_training_auth_url: >-
+  {{
+    lookup('pipe', 'openstack catalog show identity -f json') |
+      from_json |
+      json_query('endpoints[?interface == `public`].url') |
+      first
+  }}
+  
+# The domain to use when authenticating with username/password to create an appcred
+azops_training_user_domain_name: default
+
+# The project to use when creating an appcred
+# By default, use the same project ID as the deployment
+azops_training_project_id: "{{ lookup('pipe', 'openstack token issue -f value -c project_id') }}"
+
+# Variables for the training environment
+#   The external network ID
+#   By default, use the same external network as the control host
+azops_training_infra_external_network_id: >-
+  {{
+    infra_external_network_id
+    if infra_external_network_id is defined and infra_external_network_id
+    else undef(hint = 'azops_training_infra_external_network_id is required')
+  }}
+#   The ID of the network to deploy Azimuth AIOs on
+#   By default, use the same network as the control host
+azops_training_infra_network_id: >-
+  {{
+    infra_network_id
+    if infra_network_id is defined and infra_network_id
+    else undef(hint = 'azops_training_infra_network_id is required')
+  }}
+# The ID of the flavor to use for Azimuth AIOs
+azops_training_infra_flavor_name: >-
+  {{ undef(hint = 'azops_training_infra_flavor_id or azops_training_infra_flavor_name is required') }}
+azops_training_infra_flavor_id: >-
+  {{ lookup('pipe', 'openstack flavor show {{ azops_training_infra_flavor_name }} -f value -c id') }}
+
+# Indicates whether to provision Azimuth after setting up the repository
+azops_training_infra_provision_azimuth: true

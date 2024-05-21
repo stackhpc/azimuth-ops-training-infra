@@ -1,0 +1,5 @@
+ansible-core
+jmespath
+paramiko
+passlib
+python-openstackclient

@@ -1,0 +1,11 @@
+azops_training_deploy:
+  # By default, use localhost to execute the deployment
+  hosts:
+    localhost:
+      ansible_connection: local
+      ansible_python_interpreter: "{{ ansible_playbook_python }}"
+  vars:
+    terraform_binary_directory: "{{ inventory_dir }}/.bin"
+    terraform_project_path: "{{ inventory_dir }}/.terraform"
+    terraform_backend_type: local
+    terraform_backend_config: {}
